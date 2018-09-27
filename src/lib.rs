@@ -1,23 +1,14 @@
 extern crate nix;
+
 use std::thread::spawn;
-use std::net::TcpListener;
-use std::io::Write;
-use std::net::TcpStream;
-use std::net::Shutdown;
 use std::error::Error;
-use std::io::BufReader;
-use std::io::BufRead;
 use std::process::Command;
-use nix::unistd::fork;
-use nix::unistd::ForkResult;
-use nix::unistd::getpid;
-use nix::sys::signal::SIGTERM;
-use nix::sys::signal::SIGCHLD;
-use nix::sys::signal::SigHandler::SigIgn;
-use nix::sys::signal;
-use nix::sys::signal::kill;
-use nix::sys::signal::sigaction;
-use nix::sys::signal::SigAction;
+use std::net::{TcpStream, TcpListener, Shutdown};
+use std::io::{BufReader, BufRead, Write};
+use nix::unistd::{fork, ForkResult, getpid};
+use nix::sys::signal::{SIGTERM, SIGCHLD, kill,
+                       sigaction, SigAction,
+                       SigHandler::SigIgn, SaFlags, SigSet};
 
 pub enum Mode {
     Simple,
@@ -135,7 +126,7 @@ fn run_with_fork(config: Config) -> Result<(), Box<dyn Error>> {
 
     // THIS IS FINE.
     unsafe {
-        sigaction(SIGCHLD, &SigAction::new(SigIgn, signal::SaFlags::empty(), signal::SigSet::empty()))?;
+        sigaction(SIGCHLD, &SigAction::new(SigIgn, SaFlags::empty(), SigSet::empty()))?;
     }
 
     loop {
