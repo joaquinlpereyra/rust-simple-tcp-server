@@ -1,55 +1,69 @@
 extern crate nix;
 
-use std::thread::spawn;
+use nix::sys::signal::{kill, SIGTERM};
+use nix::unistd::{fork, getpid, ForkResult};
 use std::error::Error;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::Command;
-use std::net::{TcpStream, TcpListener, Shutdown};
-use std::io::{BufReader, BufRead, Write};
-use nix::unistd::{fork, ForkResult, getpid};
-use nix::sys::signal::{SIGTERM, SIGCHLD, kill,
-                       sigaction, SigAction,
-                       SigHandler::SigIgn, SaFlags, SigSet};
+use std::thread::spawn;
 
+/// Los modos en los que puede correr el servidor
+/// son simple, modo fork y modo thread
 pub enum Mode {
     Simple,
     Forked,
     Threaded,
 }
 
+/// Config struct
+/// Una configuracion basica para el servidor
 pub struct Config {
     host: String,
     port: u16,
     mode: Mode,
 }
 
+/// Metodos para el struct config
 impl Config {
+    /// Crea una nueva config con los argumentos pasados por terminal
     pub fn new(mut args: std::env::Args) -> Result<Config, &'static str> {
-        // ignore first argument as it's usually the filename
+        // ignora el primer argumento, es el nombre del archivo
         args.next();
+
+        // el segundo argumento tiene que ser el modo en el que va a correr el servidor
         let mode: Mode = match args.next() {
             Some(arg) => match arg.as_ref() {
-                // it is late so help will be an err, whatever
-                "h" => return Err("Help is sily. But you should run with params [MODE] [HOST] [PORT]"),
+                "h" => {
+                    return Err("Help is sily. But you should run with params [MODE] [HOST] [PORT]")
+                }
                 "simple" => Mode::Simple,
                 "threaded" => Mode::Threaded,
                 "forked" => Mode::Forked,
-                _ => return Err("not a valid mode of operation! try 'forked', 'threaded' or 'simple'")
-            }
-            None => return Err("Did not provide any params!")
-        };
-        let host: String = match args.next() {
-            Some(arg) => arg.clone(),
-            None => return Err("Did not provide any host!")
+                _ => {
+                    return Err(
+                        "not a valid mode of operation! try 'forked', 'threaded' or 'simple'",
+                    )
+                }
+            },
+            None => return Err("Did not provide any params!"),
         };
 
+        // la ip en la que va a correr el servidor
+        let host: String = match args.next() {
+            Some(arg) => arg.clone(),
+            None => return Err("Did not provide any host!"),
+        };
+
+        // el puerto donde va a estar escuchando
         let port: u16 = match args.next() {
             Some(arg) => match arg.parse() {
                 Ok(n) => n,
-                Err(_) => return Err("Invalid port number.")
+                Err(_) => return Err("Invalid port number."),
             },
             None => return Err("Did not get a port to run on."),
         };
-        Ok(Config{host, port, mode})
+        Ok(Config { host, port, mode })
     }
 
     pub fn host(&self) -> &str {
@@ -61,25 +75,25 @@ impl Config {
     }
 }
 
-
-/// Deals with a single client.
-/// Has absolutely all the complicated, very interesting bussiness logic of this program.
-///
-/// Will take ownership of a stream representing the TCP socket and will write to and read from it.
-/// It would be a shame if this super interesting logic leaked.
-fn handle_client(mut stream : TcpStream, ip: String) -> Result<(), Box<dyn Error>> {
+/// Tiene logica para lidiar con un cliente.
+/// Tiene un buffer para escribir y otro para leer del socket tcp.
+/// Se le pasa un strem TCP como parametro.
+fn handle_client(mut stream: TcpStream, ip: String) -> Result<(), Box<dyn Error>> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(&mut stream);
-    let mut buffer : String = String::new();
+    let mut buffer: String = String::new();
 
     let welcome = format!("Bienvenido {}\n", ip);
     writer.write(welcome.as_ref())?;
+
+    // hasta que el usuario no escriba "SALIR", el loop no se termina
     loop {
         match reader.read_line(&mut buffer)? {
             0 => return Ok(()),
             _ => {
                 match buffer.trim() {
-                    "usuarios" => {writer.write(b"OK.\n")?;
+                    "usuarios" => {
+                        writer.write(b"OK.\n")?;
                         writer.write(&Command::new("who").output()?.stdout)?;
                         writer.write(b"\nFIN.\n")?;
                     }
@@ -88,19 +102,27 @@ fn handle_client(mut stream : TcpStream, ip: String) -> Result<(), Box<dyn Error
                         writer.write(&Command::new("date").output()?.stdout)?;
                         writer.write(b"\nFIN.\n")?;
                     }
+                    "procesos" => {
+                        writer.write(b"OK.\n")?;
+                        writer.write(&Command::new("ps").output()?.stdout)?;
+                        writer.write(b"\nFIN.\n")?;
+                    }
                     "salir" => {
                         writer.write(b"ADIOS.\n")?;
                         writer.shutdown(Shutdown::Both)?;
-                        return Ok(())
+                        return Ok(());
                     }
-                    _ => { writer.write(b"ERR.\n")?; }
+                    _ => {
+                        writer.write(b"ERR.\n")?;
+                    }
                 }
                 buffer.clear();
-            },
+            }
         }
     }
 }
 
+/// Corre un servidor con una config en particular.
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     match config.mode {
         Mode::Simple => return run_single_threaded(config),
@@ -109,9 +131,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Runs the server with a single thread.
-/// Try connecting with two telnets at the same time, should not work.
-fn run_single_threaded(config: Config) -> Result<(), Box<dyn Error>>{
+/// Corre el servidor con un solo thread y un solo proceso (ie: secuencialmente)
+fn run_single_threaded(config: Config) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(format!("{}:{}", config.host(), config.port()))?;
     loop {
         let (stream, addr) = listener.accept()?;
@@ -119,36 +140,34 @@ fn run_single_threaded(config: Config) -> Result<(), Box<dyn Error>>{
     }
 }
 
-/// Runs using OS's forks!
-/// Fun to use ps -aux | grep serveto while you open up new connections.
+/// Corre usando varios procesos: uno por cliente
 fn run_with_fork(config: Config) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(format!("{}:{}", config.host(), config.port()))?;
 
-    // THIS IS FINE.
-    unsafe {
-        sigaction(SIGCHLD, &SigAction::new(SigIgn, SaFlags::empty(), SigSet::empty()))?;
-    }
-
     loop {
         let (stream, addr) = listener.accept()?;
+        // por cada vez que se acepta una conexión, hacé el fork
         match fork() {
-            Ok(ForkResult::Parent {child: _ , ..}) => {},
+            // no necesita actuarse en el padre :)
+            Ok(ForkResult::Parent { child: _, .. }) => {}
+            // en el hijo, maneja el cliente y después terminá el proceso
             Ok(ForkResult::Child) => {
                 let res = handle_client(stream, format!("{}", addr.ip()));
                 kill(getpid(), SIGTERM)?;
                 res?
-            },
-            Err(e) => return Err(Box::new(e))
+            }
+            Err(e) => return Err(Box::new(e)),
         }
     }
 }
 
-/// Runs with threads.
+/// Corre con threads!
 fn run_with_threads(config: Config) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(format!("{}:{}", config.host(), config.port()))?;
     loop {
         let (stream, addr) = listener.accept()?;
-        spawn( move || {
+        // por cada conexión aceptada, iniciá un nuevo thread
+        spawn(move || {
             if let Err(e) = handle_client(stream, format!("{}", addr.ip())) {
                 eprintln!("Thread failed {}", e);
             };
